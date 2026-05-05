@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 merge_labels.py — Основная логика объединения PDF.
-Импортируется FastAPI-приложением.
 """
 
 import re
@@ -26,9 +25,7 @@ def _find_font(candidates):
     for path in candidates:
         if os.path.exists(path):
             return path
-    raise FileNotFoundError(
-        f"Не найден TTF-шрифт. Проверьте пути: {candidates}"
-    )
+    raise FileNotFoundError(f"Не найден TTF-шрифт. Проверьте пути: {candidates}")
 
 FONT_REGULAR = _find_font(_FONT_CANDIDATES_REGULAR)
 FONT_BOLD    = _find_font(_FONT_CANDIDATES_BOLD)
@@ -50,6 +47,14 @@ def extract_shipment(page: fitz.Page) -> str | None:
     return m.group(1) if m else None
 
 
+# ─── Номер этикетки ───────────────────────────────────────────────────────
+
+def get_label_number(shipment: str) -> str:
+    """Последние 4 цифры первого блока: 86604694-0239-1 -> 4694"""
+    m = re.match(r'^\d*(\d{4})-\d{4}-\d+$', shipment)
+    return m.group(1) if m else ""
+
+
 # ─── Парсинг листа сборки ─────────────────────────────────────────────────
 
 def parse_assembly_list(pdf_path: str) -> dict:
@@ -65,7 +70,6 @@ def parse_assembly_list(pdf_path: str) -> dict:
     i = 0
     while i < len(lines):
         line = lines[i]
-
         m = re.search(r'(\d{5,}-\d{4}-\d{1,3})$', line)
         if not m:
             m = re.search(r'\d{1,3}\s+(\d{5,}-\d{4}-\d{1,3})$', line)
@@ -103,53 +107,95 @@ def parse_assembly_list(pdf_path: str) -> dict:
         if shipment not in items:
             items[shipment] = {
                 "shipment": shipment,
-                "name": name,
-                "article": article,
-                "qty": qty,
+                "name":     name,
+                "article":  article,
+                "qty":      qty,
             }
         i = j
 
     return items
 
 
-# ─── Страница с деталями ──────────────────────────────────────────────────
+# ─── Страница с деталями товара ───────────────────────────────────────────
 
 def make_detail_page(item: dict, w: float, h: float) -> fitz.Document:
+    """
+    Создаёт одностраничный PDF с деталями товара.
+    Номер этикетки — компактно в правом верхнем углу.
+    Остальное — слева сверху вниз.
+    """
     BLACK = (0, 0, 0)
-    GRAY  = (0.5, 0.5, 0.5)
+    GRAY  = (0.55, 0.55, 0.55)
+    WHITE = (1, 1, 1)
 
     doc  = fitz.open()
     page = doc.new_page(width=w, height=h)
     page.insert_font(fontname="reg",  fontfile=FONT_REGULAR)
     page.insert_font(fontname="bold", fontfile=FONT_BOLD)
 
-    fs_small  = max(4.5, w * 0.030)
-    fs_normal = max(6.0, w * 0.042)
-    fs_large  = max(7.5, w * 0.052)
-    margin    = max(5, w * 0.04)
+    margin    = max(8, w * 0.055)
+    fs_label  = max(4.5, w * 0.028)
+    fs_normal = max(6.0, w * 0.040)
+    fs_large  = max(7.5, w * 0.050)
+
+    shipment  = item.get("shipment", "")
+    label_num = get_label_number(shipment)
+
+    # ── Номер этикетки — правый верхний угол ──────────────────────────────
+    if label_num:
+        fs_tag   = max(9, w * 0.065)        # чуть крупнее основного текста
+        tag_pad  = 3
+        tag_w    = len(label_num) * fs_tag * 0.60 + tag_pad * 2
+        tag_h    = fs_tag + tag_pad * 2
+        tag_x    = w - margin - tag_w
+        tag_y    = margin - tag_pad
+
+        # # Подпись над рамкой
+        # lbl_text = "этикетка"
+        # page.insert_text(
+        #     (tag_x, tag_y - 1),
+        #     lbl_text,
+        #     fontsize=fs_label, fontname="reg", color=GRAY,
+        # )
+        # Чёрная рамка
+        box = fitz.Rect(tag_x, tag_y + fs_label + 1,
+                        tag_x + tag_w, tag_y + fs_label + 1 + tag_h)
+        page.draw_rect(box, color=BLACK, fill=BLACK)
+        # Цифры белым
+        page.insert_text(
+            (tag_x + tag_pad, box.y1 - tag_pad),
+            label_num,
+            fontsize=fs_tag, fontname="bold", color=WHITE,
+        )
+
+    # ── Левая колонка: основные данные ────────────────────────────────────
+    # Ограничиваем правую границу текста чтобы не залезать на номер этикетки
+    right_limit = (w - margin - max(9, w * 0.065) * 2.8) if label_num else (w - margin)
+    max_chars = max(1, int((right_limit - margin) / (fs_normal * 0.56)))
+
     y = margin
 
-    def lh(fs, gap=1.8):
-        return fs + gap
-
     # Номер отправления
-    shipment = item.get("shipment", "")
-    page.insert_text((margin, y + fs_small), shipment,
-                     fontsize=fs_small, fontname="reg", color=GRAY)
-    y += lh(fs_small, 4)
+    page.insert_text(
+        (margin, y + fs_label),
+        shipment,
+        fontsize=fs_label, fontname="reg", color=GRAY,
+    )
+    y += fs_label + 5
 
-    page.draw_line((margin, y), (w - margin, y), color=BLACK, width=0.5)
-    y += 5
+    y += 6
 
     # Наименование
-    page.insert_text((margin, y + fs_small), "Наименование",
-                     fontsize=fs_small, fontname="reg", color=GRAY)
-    y += lh(fs_small, 2)
+    page.insert_text(
+        (margin, y + fs_label),
+        "Наименование",
+        fontsize=fs_label, fontname="reg", color=GRAY,
+    )
+    y += fs_label + 3
 
     name = item.get("name") or "—"
     words = name.split()
     cur_line, wrapped = [], []
-    max_chars = max(1, int((w - margin * 2) / (fs_normal * 0.56)))
     for word in words:
         test = " ".join(cur_line + [word])
         if len(test) <= max_chars or not cur_line:
@@ -160,28 +206,36 @@ def make_detail_page(item: dict, w: float, h: float) -> fitz.Document:
     if cur_line:
         wrapped.append(" ".join(cur_line))
     for ln in wrapped:
-        page.insert_text((margin, y + fs_normal), ln,
-                         fontsize=fs_normal, fontname="bold", color=BLACK)
-        y += lh(fs_normal, 1.5)
-    y += 4
-
-    page.draw_line((margin, y), (w - margin, y), color=BLACK, width=0.3)
+        page.insert_text(
+            (margin, y + fs_normal),
+            ln,
+            fontsize=fs_normal, fontname="bold", color=BLACK,
+        )
+        y += fs_normal + 2
     y += 5
 
-    # Артикул
-    page.insert_text((margin, y + fs_small), "Артикул",
-                     fontsize=fs_small, fontname="reg", color=GRAY)
-    y += lh(fs_small, 2)
-    page.insert_text((margin, y + fs_normal), item.get("article") or "—",
-                     fontsize=fs_normal, fontname="reg", color=BLACK)
-    y += lh(fs_normal, 4)
+    # Разделитель
+    page.draw_line((margin, y), (w - margin, y), color=BLACK, width=0.3)
+    y += 6
 
-    # Количество
-    page.insert_text((margin, y + fs_small), "Количество",
-                     fontsize=fs_small, fontname="reg", color=GRAY)
-    y += lh(fs_small, 2)
-    page.insert_text((margin, y + fs_large), f"{item.get('qty', '1')} шт.",
-                     fontsize=fs_large, fontname="bold", color=BLACK)
+    # Артикул и Количество
+    col2_x = w * 0.52
+    page.insert_text((margin,  y + fs_label), "Артикул",
+                     fontsize=fs_label, fontname="reg", color=GRAY)
+    page.insert_text((col2_x, y + fs_label), "Количество",
+                     fontsize=fs_label, fontname="reg", color=GRAY)
+    y += fs_label + 3
+
+    page.insert_text(
+        (margin, y + fs_normal),
+        item.get("article") or "—",
+        fontsize=fs_normal, fontname="reg", color=BLACK,
+    )
+    page.insert_text(
+        (col2_x, y + fs_large),
+        f"{item.get('qty', '1')} шт.",
+        fontsize=fs_large, fontname="bold", color=BLACK,
+    )
 
     return doc
 
@@ -189,12 +243,9 @@ def make_detail_page(item: dict, w: float, h: float) -> fitz.Document:
 # ─── Основная функция ─────────────────────────────────────────────────────
 
 def merge_labels(barcodes_path: str, assembly_path: str, output_path: str) -> dict:
-    """
-    Возвращает {'matched': N, 'unmatched': N, 'total_pages': N}
-    """
-    items = parse_assembly_list(assembly_path)
+    items        = parse_assembly_list(assembly_path)
     barcodes_doc = fitz.open(barcodes_path)
-    output_doc = fitz.open()
+    output_doc   = fitz.open()
     matched, unmatched = 0, 0
 
     for idx in range(barcodes_doc.page_count):
@@ -227,7 +278,7 @@ def merge_labels(barcodes_path: str, assembly_path: str, output_path: str) -> di
     output_doc.close()
 
     return {
-        "matched": matched,
-        "unmatched": unmatched,
+        "matched":     matched,
+        "unmatched":   unmatched,
         "total_pages": (matched + unmatched) * 2,
     }
