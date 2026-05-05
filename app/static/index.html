@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Label Merger — Объединение этикеток</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 36px 40px;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+
+    .field { margin-bottom: 20px; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: #555;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .file-input-wrap {
+      position: relative;
+      border: 1.5px dashed #ccc;
+      border-radius: 6px;
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .file-input-wrap:hover { border-color: #888; background: #fafafa; }
+    .file-input-wrap.has-file { border-color: #333; border-style: solid; }
+    .file-input-wrap.drag-over { border-color: #333; background: #f0f0f0; }
+
+    .file-input-wrap input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+
+    .file-icon { font-size: 20px; flex-shrink: 0; }
+
+    .file-text { font-size: 13px; color: #888; }
+    .file-text.selected { color: #1a1a1a; font-weight: 500; }
+
+    button[type="submit"] {
+      width: 100%;
+      padding: 12px;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    button[type="submit"]:hover:not(:disabled) { background: #333; }
+    button[type="submit"]:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .status {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.5;
+      display: none;
+    }
+    .status.loading { background: #f0f0f0; color: #555; display: block; }
+    .status.success { background: #f0faf0; color: #1a5c1a; border: 1px solid #b3ddb3; display: block; }
+    .status.error   { background: #fff0f0; color: #7a1a1a; border: 1px solid #f0b3b3; display: block; }
+
+    .spinner {
+      display: inline-block;
+      width: 13px; height: 13px;
+      border: 2px solid #aaa;
+      border-top-color: #333;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .download-btn {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 8px 16px;
+      background: #1a1a1a;
+      color: #fff;
+      border-radius: 5px;
+      font-size: 13px;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .download-btn:hover { background: #333; }
+
+    .stats { margin-top: 8px; font-size: 12px; color: #444; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Label Merger</h1>
+  <p class="subtitle">Загрузите два файла — получите PDF где за каждым штрих-кодом следует страница с деталями товара.</p>
+
+  <form id="form">
+    <div class="field">
+      <label>PDF со штрих-кодами</label>
+      <div class="file-input-wrap" id="wrap-barcodes">
+        <span class="file-icon">🏷️</span>
+        <span class="file-text" id="name-barcodes">Выберите или перетащите файл</span>
+        <input type="file" id="barcodes" name="barcodes" accept=".pdf" required />
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Лист сборки</label>
+      <div class="file-input-wrap" id="wrap-assembly">
+        <span class="file-icon">📋</span>
+        <span class="file-text" id="name-assembly">Выберите или перетащите файл</span>
+        <input type="file" id="assembly" name="assembly" accept=".pdf" required />
+      </div>
+    </div>
+
+    <button type="submit" id="btn" disabled>Объединить</button>
+  </form>
+
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+  const form      = document.getElementById('form');
+  const btn       = document.getElementById('btn');
+  const statusEl  = document.getElementById('status');
+
+  // Обновление отображения выбранного файла
+  function setupFileInput(inputId, wrapId, nameId) {
+    const input = document.getElementById(inputId);
+    const wrap  = document.getElementById(wrapId);
+    const nameEl = document.getElementById(nameId);
+
+    input.addEventListener('change', () => {
+      if (input.files[0]) {
+        nameEl.textContent = input.files[0].name;
+        nameEl.classList.add('selected');
+        wrap.classList.add('has-file');
+      } else {
+        nameEl.textContent = 'Выберите или перетащите файл';
+        nameEl.classList.remove('selected');
+        wrap.classList.remove('has-file');
+      }
+      updateBtn();
+    });
+
+    // Drag & drop
+    wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.classList.add('drag-over'); });
+    wrap.addEventListener('dragleave', () => wrap.classList.remove('drag-over'));
+    wrap.addEventListener('drop', e => {
+      e.preventDefault();
+      wrap.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.toLowerCase().endsWith('.pdf')) {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change'));
+      }
+    });
+  }
+
+  setupFileInput('barcodes', 'wrap-barcodes', 'name-barcodes');
+  setupFileInput('assembly', 'wrap-assembly', 'name-assembly');
+
+  function updateBtn() {
+    const b = document.getElementById('barcodes').files[0];
+    const a = document.getElementById('assembly').files[0];
+    btn.disabled = !(b && a);
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    statusEl.className = 'status loading';
+    statusEl.innerHTML = '<span class="spinner"></span> Обрабатываем файлы…';
+
+    const fd = new FormData(form);
+
+    try {
+      const resp = await fetch('/merge', { method: 'POST', body: fd });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || 'Неизвестная ошибка сервера');
+      }
+
+      // Получаем статистику из заголовков
+      const matched    = resp.headers.get('X-Matched')     || '?';
+      const unmatched  = resp.headers.get('X-Unmatched')   || '?';
+      const totalPages = resp.headers.get('X-Total-Pages') || '?';
+
+      // Скачиваем blob
+      const blob = await resp.blob();
+      const url  = URL.createObjectURL(blob);
+
+      statusEl.className = 'status success';
+      statusEl.innerHTML = `
+        ✅ Готово!
+        <div class="stats">
+          Совпало: <b>${matched}</b> &nbsp;|&nbsp;
+          Не найдено: <b>${unmatched}</b> &nbsp;|&nbsp;
+          Страниц: <b>${totalPages}</b>
+        </div>
+        <a class="download-btn" href="${url}" download="merged_labels.pdf">⬇ Скачать PDF</a>
+      `;
+    } catch (err) {
+      statusEl.className = 'status error';
+      statusEl.innerHTML = `❌ Ошибка: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
