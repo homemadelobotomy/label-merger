@@ -34,17 +34,44 @@ FONT_BOLD    = _find_font(_FONT_CANDIDATES_BOLD)
 # ─── Извлечение номера отправления ────────────────────────────────────────
 
 def extract_shipment(page: fitz.Page) -> str | None:
-    text = page.get_text()
-    for line in text.splitlines():
-        line = line.strip()
+    """
+    Извлекает номер отправления из страницы штрих-кода.
+
+    Поддерживает два формата Ozon:
+    - Старый: номер слеплен со страницы целиком '0125822911-0295-12911'
+    - Новый:  номер разбит на две строки '4663 7261' + '-0358-1'
+    """
+    raw_lines = [l.strip() for l in page.get_text().splitlines() if l.strip()]
+
+    # Убираем пробел внутри числового блока: '4663 7261' -> '46637261'
+    lines = [re.sub(r'(\d)\s+(\d)', r'\1\2', l) for l in raw_lines]
+
+    # Поиск в одной строке (старый формат — слипшийся с номером этикетки)
+    for line in lines:
         m = re.match(r'^(\d+-\d{4}-\d{1,3})\d{4}$', line)
         if m:
             return m.group(1)
         m2 = re.match(r'^(\d+-\d{4}-\d{1,3})$', line)
         if m2:
             return m2.group(1)
-    m = re.search(r'(\d{5,}-\d{4}-\d{1,3})(?:\d{4})?(?!\d)', text)
+
+    # Поиск в двух соседних строках (новый формат)
+    for i in range(len(lines) - 1):
+        combined = lines[i] + lines[i + 1]
+        m = re.match(r'^(\d+-\d{4}-\d{1,3})\d{4}$', combined)
+        if m:
+            return m.group(1)
+        m2 = re.match(r'^(\d+-\d{4}-\d{1,3})$', combined)
+        if m2:
+            return m2.group(1)
+
+    # Fallback: ищем паттерн в произвольном месте (без пробелов)
+    text_nospace = re.sub(r'(\d)\s+(\d)', r'\1\2', page.get_text())
+    m = re.search(r'(\d{5,}-\d{4}-\d{1,3})(?:\d{4})?(?!\d)', text_nospace)
     return m.group(1) if m else None
+
+
+
 
 
 # ─── Номер этикетки ───────────────────────────────────────────────────────
@@ -64,9 +91,8 @@ def parse_assembly_list(pdf_path: str) -> dict:
         full_text += page.get_text() + "\n"
     doc.close()
 
+    lines = [l.strip() for l in full_text.splitlines() if l.strip()]
     items = {}
-    lines = [l.strip() for l in full_text.splitlines()]
-
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -78,32 +104,44 @@ def parse_assembly_list(pdf_path: str) -> dict:
             continue
 
         shipment = m.group(1)
-        name_parts, article, qty = [], "", "1"
-
         j = i + 1
-        while j < len(lines) and j < i + 10:
+
+        # Собираем блок до 4-значной этикетки
+        block = []
+        while j < len(lines) and j < i + 15:
             nl = lines[j]
-            if not nl:
-                j += 1
-                continue
-            if re.match(r'^\d{1,2}$', nl):
-                qty = nl
-                j += 1
-                break
             if re.match(r'^\d{4}$', nl):
                 j += 1
                 break
-            if (re.match(r'^[A-Za-zА-Яа-яЁё0-9_\-\/]+$', nl)
-                    and 2 <= len(nl) <= 40
-                    and not re.match(r'^\d+$', nl)
-                    and not article
-                    and name_parts):
-                article = nl
-            else:
-                name_parts.append(nl)
+            block.append(nl)
             j += 1
 
-        name = " ".join(p for p in name_parts if p)
+        temp = list(block)
+
+        # Количество: строго 1-2 цифры и больше ничего
+        qty = "1"
+        if temp and re.match(r'^\d{1,2}$', temp[-1]):
+            qty = temp[-1]
+            temp = temp[:-1]
+
+        # Артикул: последняя строка без пробелов
+        # Если предпоследняя тоже без пробелов И не начинается с цифры — перенос, склеиваем
+        article = ""
+        if temp:
+            last = temp[-1]
+            if ' ' not in last and len(last) >= 2:
+                if (len(temp) >= 2
+                        and ' ' not in temp[-2]
+                        and len(temp[-2]) >= 2
+                        and not re.match(r'^\d', last)):   # вторая часть не начинается с цифры
+                    article = temp[-2] + temp[-1]
+                    temp = temp[:-2]
+                else:
+                    article = last
+                    temp = temp[:-1]
+
+        name = " ".join(temp)
+
         if shipment not in items:
             items[shipment] = {
                 "shipment": shipment,
@@ -114,7 +152,6 @@ def parse_assembly_list(pdf_path: str) -> dict:
         i = j
 
     return items
-
 
 # ─── Страница с деталями товара ───────────────────────────────────────────
 
